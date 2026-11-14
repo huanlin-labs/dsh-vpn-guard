@@ -1,0 +1,62 @@
+{
+  "name": "dsh-vpn-guard",
+  "version": "0.2.1",
+  "description": "Provider-agnostic VPN egress and AI account-risk monitor for DSH; optional Clash/Mihomo adapter, no vendor lock-in.",
+  "license": "MIT",
+  "author": "huanlin-labs",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/huanlin-labs/dsh-vpn-guard.git"
+  },
+  "homepage": "https://github.com/huanlin-labs/dsh-vpn-guard#readme",
+  "bugs": {
+    "url": "https://github.com/huanlin-labs/dsh-vpn-guard/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "vpn",
+    "clash",
+    "mihomo",
+    "ip-reputation",
+    "ai-risk"
+  ],
+  "type": "module",
+  "main": "./index.js",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./package.json": "./package.json",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "lib",
+    "locale/*.json",
+    "docs",
+    "icon.svg",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=20.11"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-runtime"
+      ]
+    }
+  }
+}

@@ -1,0 +1,4 @@
+{
+  "name": "VPN Guard",
+  "description": "Provider-agnostic VPN egress and AI account-risk monitor; optional Clash/Mihomo adapter."
+}
