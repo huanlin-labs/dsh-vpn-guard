@@ -76,6 +76,15 @@ window.__ModuleLoader__.load({
 .vpg-chip.active{color:var(--dsw-alias-label-primary);border-color:var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-2)}
 .vpg-input{border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary);border-radius:8px;padding:6px 10px;font-size:12px;outline:none;min-width:180px}
 .vpg-input:focus{border-color:var(--dsw-alias-brand-primary)}
+.vpg-select{border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary);border-radius:8px;padding:6px 8px;font-size:11px;outline:none;max-width:100%}
+.vpg-group-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+@media(max-width:900px){.vpg-group-grid{grid-template-columns:1fr}}
+.vpg-group{border:1px solid var(--dsw-alias-border-l1);border-radius:10px;padding:10px 12px;background:var(--dsw-alias-bg-base);min-width:0}
+.vpg-group-head{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:6px}
+.vpg-group-name{font-size:12px;font-weight:700;word-break:break-all}
+.vpg-group-now{font-size:11px;color:var(--dsw-alias-label-secondary);line-height:1.55;word-break:break-all;margin-bottom:7px}
+.vpg-conn-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin-bottom:12px}
+@media(max-width:900px){.vpg-conn-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
 .vpg-table-wrap{overflow:auto;border:1px solid var(--dsw-alias-border-l1);border-radius:10px}
 .vpg-table{width:100%;border-collapse:collapse;min-width:820px;font-size:12px}
 .vpg-table th,.vpg-table td{padding:9px 10px;text-align:left;border-bottom:1px solid var(--dsw-alias-border-l1);white-space:nowrap;vertical-align:middle}
@@ -113,6 +122,7 @@ window.__ModuleLoader__.load({
 
     const TABS = [
       ['overview', '总览'],
+      ['clash', 'Clash'],
       ['ai', 'AI 服务'],
       ['social', '社媒'],
       ['nodes', '节点'],
@@ -166,6 +176,19 @@ window.__ModuleLoader__.load({
         .replace(/\uFE0F/g, '')
         .replace(/\s+/g, ' ')
         .trim()
+    }
+
+    function formatBytes(value) {
+      const n = Number(value)
+      if (!Number.isFinite(n) || n <= 0) return '0 B'
+      const units = ['B', 'KB', 'MB', 'GB', 'TB']
+      let index = 0
+      let size = n
+      while (size >= 1024 && index < units.length - 1) {
+        size /= 1024
+        index += 1
+      }
+      return `${size >= 100 ? size.toFixed(0) : size.toFixed(size >= 10 ? 1 : 2)} ${units[index]}`
     }
 
     function Pill(props) {
@@ -474,6 +497,9 @@ window.__ModuleLoader__.load({
       const [draft, setDraft] = useState(null)
       const [expanded, setExpanded] = useState('')
       const [showAllNodes, setShowAllNodes] = useState(false)
+      const [clashView, setClashView] = useState(null)
+      const [clashBusy, setClashBusy] = useState(false)
+      const [clashQuery, setClashQuery] = useState('')
 
       const loadStatus = useCallback(async () => {
         try {
@@ -511,6 +537,18 @@ window.__ModuleLoader__.load({
         }
       }, [])
 
+      const loadClash = useCallback(async () => {
+        setClashBusy(true)
+        try {
+          const data = await api('/clash')
+          setClashView(data)
+        } catch (err) {
+          setError(err.message)
+        } finally {
+          setClashBusy(false)
+        }
+      }, [])
+
       useEffect(() => {
         loadStatus()
         loadNodes()
@@ -522,6 +560,13 @@ window.__ModuleLoader__.load({
           clearInterval(historyTimer)
         }
       }, [loadStatus, loadNodes, loadHistory])
+
+      useEffect(() => {
+        if (tab !== 'clash') return undefined
+        loadClash()
+        const timer = setInterval(loadClash, 15000)
+        return () => clearInterval(timer)
+      }, [tab, loadClash])
 
       async function runCheck(mode) {
         setBusy(mode)
@@ -545,6 +590,15 @@ window.__ModuleLoader__.load({
           return
         }
         setModal({ node, group })
+      }
+
+      function openGroupSwitch(group, nodeName) {
+        const allowed = (meta && meta.config && meta.config.allowedSwitchGroups) || []
+        if (!allowed.includes(group)) {
+          setError(`不允许切换该组：${group}`)
+          return
+        }
+        setModal({ node: { name: nodeName }, group })
       }
 
       async function confirmSwitch() {
@@ -713,7 +767,14 @@ window.__ModuleLoader__.load({
             { className: 'vpg-grid two', style: { marginBottom: '14px' } },
             h(
               Card,
-              { title: '运行状态' },
+              {
+                title: '运行状态',
+                extra: h(
+                  'button',
+                  { className: 'vpg-btn small', onClick: () => setTab('clash') },
+                  'Clash 管理',
+                ),
+              },
               h(
                 'div',
                 { className: 'vpg-facts' },
@@ -785,6 +846,204 @@ window.__ModuleLoader__.load({
               snapshot
                 ? `${verdictTitle}。AI 服务 ${serviceCount} 项有结果；社媒 ${socialCount} 个平台仅做 IP 侧适配度。节点共 ${nodes.length} 个，默认展示前 20 个。`
                 : '等待首次轻量检测。',
+            ),
+          ),
+        )
+      }
+
+      function renderClash() {
+        const live = clashView && clashView.clash ? clashView.clash : clash
+        const connections = clashView && clashView.connections ? clashView.connections : null
+        const configs = (live && live.configs) || {}
+        const groups = (live && live.groups) || []
+        const clashNodes = (live && live.nodes) || []
+        const allowed = (cfg.allowedSwitchGroups || []).map((item) => String(item))
+        const filteredClashNodes = clashNodes.filter((node) => {
+          if (!clashQuery) return true
+          const text = `${node.name} ${node.type || ''}`.toLowerCase()
+          return text.includes(clashQuery.toLowerCase())
+        })
+        const groupNamesOf = (nodeName) =>
+          groups.filter((group) => group.all.includes(nodeName)).map((group) => group.name)
+
+        if (!live) {
+          return h(Card, null, h('div', { className: 'vpg-empty' }, clashBusy ? '正在读取 Clash 状态…' : '尚未读取 Clash 状态。'))
+        }
+
+        return h(
+          React.Fragment,
+          null,
+          h(
+            'div',
+            { className: 'vpg-toolbar' },
+            h(
+              'div',
+              { className: 'vpg-card-note', style: { margin: 0 } },
+              live.reachable
+                ? `控制器 ${clashView && clashView.controller ? clashView.controller : '—'} · ${live.version || '版本未知'}`
+                : `Clash 不可达：${live.error || '未知错误'}`,
+            ),
+            h('button', { className: 'vpg-btn small', disabled: clashBusy, onClick: loadClash }, clashBusy ? '刷新中…' : '刷新 Clash'),
+          ),
+          h(
+            'div',
+            { className: 'vpg-grid two', style: { marginBottom: '14px' } },
+            h(
+              Card,
+              { title: '核心状态' },
+              h(
+                'div',
+                { className: 'vpg-facts' },
+                h(Row, { k: '控制器', v: live.reachable ? '可达' : '不可达' }),
+                h(Row, { k: '运行模式', v: configs.mode || '—' }),
+                h(Row, { k: 'mixed-port', v: configs.mixedPort != null ? String(configs.mixedPort) : '—', mono: true }),
+                h(Row, { k: 'TUN', v: configs.tun == null ? '—' : configs.tun ? '开启' : '关闭' }),
+                h(Row, { k: '允许局域网', v: configs.allowLan == null ? '—' : configs.allowLan ? '是' : '否' }),
+                h(Row, { k: '系统代理', v: vpn && vpn.systemProxy ? (vpn.systemProxy.enabled ? `开启 · ${vpn.systemProxy.server || '—'}` : '关闭') : '—' }),
+              ),
+            ),
+            h(
+              Card,
+              { title: '代理组' },
+              groups.length === 0
+                ? h('div', { className: 'vpg-empty' }, '没有代理组数据')
+                : h(
+                    'div',
+                    { className: 'vpg-facts' },
+                    ...groups.slice(0, 8).map((group) =>
+                      h(Row, {
+                        key: group.name,
+                        k: `${group.name} · ${group.type}`,
+                        v: `${cleanNodeName(group.now) || '—'}（${group.all.length}）`,
+                      }),
+                    ),
+                  ),
+            ),
+          ),
+          h(
+            Card,
+            { title: `代理组控制（${groups.length}）`, extra: h('span', { className: 'vpg-card-note', style: { margin: 0 } }, '只有白名单组可直接切换') },
+            groups.length === 0
+              ? h('div', { className: 'vpg-empty' }, '没有代理组')
+              : h(
+                  'div',
+                  { className: 'vpg-group-grid' },
+                  groups.map((group) =>
+                    h(
+                      'div',
+                      { className: 'vpg-group', key: group.name },
+                      h(
+                        'div',
+                        { className: 'vpg-group-head' },
+                        h('span', { className: 'vpg-group-name' }, group.name),
+                        h(Pill, { tone: group.type === 'Selector' ? C.brand : C.secondary }, group.type),
+                      ),
+                      h('div', { className: 'vpg-group-now' }, `当前：${cleanNodeName(group.now) || '—'} · ${group.all.length} 个节点`),
+                      group.type === 'Selector' && allowed.includes(group.name)
+                        ? h(
+                            'select',
+                            {
+                              className: 'vpg-select',
+                              value: '',
+                              disabled: busy !== '',
+                              onChange: (event) => {
+                                const name = event.target.value
+                                event.target.value = ''
+                                if (name) openGroupSwitch(group.name, name)
+                              },
+                            },
+                            h('option', { value: '' }, '选择节点切换…'),
+                            group.all.map((name) => h('option', { key: name, value: name }, cleanNodeName(name) || name)),
+                          )
+                        : h('div', { className: 'vpg-card-note', style: { margin: 0 } }, '只读组'),
+                    ),
+                  ),
+                ),
+          ),
+          h(
+            Card,
+            {
+              title: '连接',
+              extra: connections && connections.ok
+                ? h('span', { className: 'vpg-card-note', style: { margin: 0 } }, `活动 ${connections.count} · ↑ ${formatBytes(connections.uploadTotal)} · ↓ ${formatBytes(connections.downloadTotal)}`)
+                : null,
+            },
+            !connections
+              ? h('div', { className: 'vpg-empty' }, clashBusy ? '读取中…' : '尚无连接数据')
+              : !connections.ok
+                ? h('div', { className: 'vpg-empty' }, `连接数据不可用：${connections.error || '未知错误'}`)
+                : h(
+                    'div',
+                    { className: 'vpg-table-wrap', style: { maxHeight: '300px' } },
+                    h(
+                      'table',
+                      { className: 'vpg-table' },
+                      h('thead', null, h('tr', null, ['主机', '网络', '链路', '规则', '上传', '下载'].map((title) => h('th', { key: title }, title)))),
+                      h(
+                        'tbody',
+                        null,
+                        connections.items.length === 0
+                          ? h('tr', null, h('td', { colSpan: 6, className: 'vpg-empty' }, '当前没有活动连接'))
+                          : connections.items.map((item, index) =>
+                              h(
+                                'tr',
+                                { key: item.id || index },
+                                h('td', { className: 'wrap' }, item.host || '—', item.destinationPort ? `:${item.destinationPort}` : ''),
+                                h('td', null, item.network || '—'),
+                                h('td', { className: 'wrap' }, (item.chains || []).join(' → ') || '—'),
+                                h('td', { className: 'wrap' }, [item.rule, item.rulePayload].filter(Boolean).join(' · ') || '—'),
+                                h('td', { className: 'vpg-mono' }, formatBytes(item.upload)),
+                                h('td', { className: 'vpg-mono' }, formatBytes(item.download)),
+                              ),
+                            ),
+                      ),
+                    ),
+                  ),
+          ),
+          h(
+            Card,
+            {
+              title: `节点（${clashNodes.length}）`,
+              extra: h('input', {
+                className: 'vpg-input',
+                placeholder: '搜索节点',
+                value: clashQuery,
+                onChange: (event) => setClashQuery(event.target.value),
+              }),
+            },
+            h(
+              'div',
+              { className: 'vpg-table-wrap', style: { maxHeight: '420px' } },
+              h(
+                'table',
+                { className: 'vpg-table' },
+                h('thead', null, h('tr', null, ['节点', '类型', '延迟', '所在组', '操作'].map((title) => h('th', { key: title }, title)))),
+                h(
+                  'tbody',
+                  null,
+                  filteredClashNodes.length === 0
+                    ? h('tr', null, h('td', { colSpan: 5, className: 'vpg-empty' }, '没有匹配节点'))
+                    : filteredClashNodes.map((node) => {
+                        const inGroups = groupNamesOf(node.name)
+                        const switchable = inGroups.find((name) => allowed.includes(name))
+                        return h(
+                          'tr',
+                          { key: node.name },
+                          h('td', { className: 'wrap' }, node.name),
+                          h('td', null, node.type || '—'),
+                          h('td', { className: 'vpg-mono' }, node.delay != null ? `${node.delay} ms` : '—'),
+                          h('td', { className: 'wrap' }, inGroups.join(' / ') || '—'),
+                          h(
+                            'td',
+                            null,
+                            switchable
+                              ? h('button', { className: 'vpg-btn small', disabled: busy !== '', onClick: () => openGroupSwitch(switchable, node.name) }, '切换')
+                              : '—',
+                          ),
+                        )
+                      }),
+                ),
+              ),
             ),
           ),
         )
@@ -1202,6 +1461,9 @@ window.__ModuleLoader__.load({
               'button',
               { key, className: 'vpg-tab' + (tab === key ? ' active' : ''), onClick: () => setTab(key) },
               label,
+              key === 'clash' && clashView && clashView.clash && clashView.clash.reachable
+                ? h('span', { className: 'vpg-tab-count' }, 'Clash Verge')
+                : null,
               key === 'ai' && ai ? h('span', { className: 'vpg-tab-count' }, `${serviceCount}`) : null,
               key === 'social' ? h('span', { className: 'vpg-tab-count' }, `${socialCount}`) : null,
               key === 'nodes' && nodes.length ? h('span', { className: 'vpg-tab-count' }, `${nodes.length}`) : null,
@@ -1213,15 +1475,17 @@ window.__ModuleLoader__.load({
           ? h(Card, null, h('div', { className: 'vpg-empty' }, '正在首次检测，请稍候……（首次全量检测会自动进行）'))
           : tab === 'overview'
             ? renderOverview()
-            : tab === 'ai'
-              ? renderAI()
-              : tab === 'social'
-                ? renderSocial()
-                : tab === 'nodes'
-                  ? renderNodes()
-                  : tab === 'history'
-                    ? renderHistory()
-                    : renderSettings(),
+            : tab === 'clash'
+              ? renderClash()
+              : tab === 'ai'
+                ? renderAI()
+                : tab === 'social'
+                  ? renderSocial()
+                  : tab === 'nodes'
+                    ? renderNodes()
+                    : tab === 'history'
+                      ? renderHistory()
+                      : renderSettings(),
 
         modal
           ? h(

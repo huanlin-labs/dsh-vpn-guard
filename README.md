@@ -76,6 +76,17 @@ Clash Verge Rev usually exposes its controller on a **Windows named pipe** (`\\.
 
 An explicit HTTP controller such as `127.0.0.1:9097` still works for other Clash/Mihomo builds.
 
+The plugin page also includes a **Clash** subpage. It reads the live controller and shows:
+
+- core status (version, mode, mixed-port, TUN, LAN, system proxy);
+- every proxy group and its current node;
+- active connections with host, network, chain, rule and byte counters;
+- the full node list with delay and group membership.
+
+Groups in `allowedSwitchGroups` can be switched from this page; everything else is read-only. The page refreshes every 15 seconds while open. It never edits Clash YAML or subscription files.
+
+`GET /__dsh-vpn-guard/clash` returns the same aggregation for scripts or diagnostics.
+
 **WireGuard / OpenVPN / Tailscale (TUN, no local HTTP port)**
 
 ```json

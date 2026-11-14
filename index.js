@@ -14,6 +14,7 @@ import path from 'node:path'
 import {
   detectClashVerge,
   fetchExitInfo,
+  getClashConnections,
   getClashState,
   getWindowsState,
   queryIpApi,
@@ -27,7 +28,7 @@ import { createStore, defaultDataDir } from './lib/store.js'
 
 export const inject = ['webServer']
 
-const VERSION = '0.3.0'
+const VERSION = '0.4.0'
 const BASE = '/__dsh-vpn-guard'
 const MAX_BODY = 32 * 1024
 
@@ -442,6 +443,24 @@ export function apply(ctx, config) {
       method: 'GET',
       path: `${BASE}/detect`,
       handler: async () => ({ ok: true, detection: await getClashVergeDetection(true) }),
+    },
+    {
+      method: 'GET',
+      path: `${BASE}/clash`,
+      handler: async () => {
+        const controller = await resolvedController()
+        const clash = await getClashState(controller)
+        const connections = clash.reachable
+          ? await getClashConnections(controller)
+          : { ok: false, count: 0, uploadTotal: 0, downloadTotal: 0, memory: null, items: [], error: clash.error }
+        return {
+          ok: true,
+          controller,
+          clash,
+          connections,
+          updatedAt: new Date().toISOString(),
+        }
+      },
     },
     {
       method: 'POST',
