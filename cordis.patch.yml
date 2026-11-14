@@ -1,0 +1,14 @@
+# dsh-vpn-guard bundle patch
+#
+# Host half (index.js): provider-agnostic egress probes plus an optional
+# Clash/Mihomo controller adapter, exposed as JSON routes under
+# /__dsh-vpn-guard/*. Client half (client.js): one sidebar nav row
+# (sidebar.panellist) plus the full page (main keyed by "vpn-guard").
+#
+# No @deepseek-ai/dsh* peer dependency is declared; the only runtime service
+# used by the host half is `webServer`, declared in index.js.
+
+- insert:
+    - id: vpn-guard
+      name: 'dsh-vpn-guard'
+      config: {}
