@@ -1,6 +1,6 @@
 {
   "name": "dsh-vpn-guard",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Provider-agnostic VPN egress and AI account-risk monitor for DSH; optional Clash/Mihomo adapter, no vendor lock-in.",
   "license": "MIT",
   "author": "huanlin-labs",

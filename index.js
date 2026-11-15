@@ -22,13 +22,13 @@ import {
   runIpjudge,
   switchClashNode,
 } from './lib/probe.js'
-import { computeScores } from './lib/score.js'
+import { computeScores, SCORE_VERSION } from './lib/score.js'
 import { buildNodeRows, readCsvRows, readKeyNodes } from './lib/nodes.js'
 import { createStore, defaultDataDir } from './lib/store.js'
 
 export const inject = ['webServer']
 
-const VERSION = '0.4.0'
+const VERSION = '0.5.0'
 const BASE = '/__dsh-vpn-guard'
 const MAX_BODY = 32 * 1024
 
@@ -177,12 +177,18 @@ function compactRecord(snapshot) {
   return {
     ts: snapshot.ts,
     mode: snapshot.mode,
+    fullStatus: snapshot.fullStatus ?? (snapshot.mode === 'full' ? 'complete' : 'cached'),
     node: snapshot.current,
     exitIp: snapshot.exit?.ip ?? null,
     country: snapshot.exit?.country ?? null,
     latencyMs: snapshot.exit?.latencyMs ?? null,
     scores: snapshot.scores ?? null,
-    aiScore: snapshot.ai?.ipjudge?.score ?? null,
+    scoreVersion: snapshot.scores?.meta?.version ?? SCORE_VERSION,
+    scoreMeta: snapshot.scores?.meta ?? null,
+    stableAi: snapshot.scores?.aiStable ?? null,
+    stableOverall: snapshot.scores?.overallStable ?? null,
+    aiScore: snapshot.scores?.ai ?? null,
+    aiSourceScore: snapshot.ai?.ipjudge?.score ?? null,
     claudeLevel: snapshot.ai?.claude?.level ?? null,
     alerts: (snapshot.alerts ?? []).map((item) => item.text),
   }
@@ -244,6 +250,7 @@ export function apply(ctx, config) {
   store.saveConfig(publicConfig(cfg))
 
   let snapshot = null
+  let lastFull = null
   let running = null
   let lastFullAt = null
   let lastLightAt = null
@@ -251,6 +258,13 @@ export function apply(ctx, config) {
   const pendingSwitches = new Map()
   let timers = []
   let detectCache = { at: 0, value: null }
+
+  const persistedFull = store.readLastFull()
+  if (persistedFull?.scores?.meta?.version === SCORE_VERSION && persistedFull?.scores?.meta?.complete === true) {
+    lastFull = persistedFull
+    lastFullAt = persistedFull.ts
+    snapshot = persistedFull
+  }
 
   async function getClashVergeDetection(force = false) {
     const now = Date.now()
@@ -264,6 +278,69 @@ export function apply(ctx, config) {
     if (cfg.controller && !['auto', 'clash-verge'].includes(cfg.controller)) return cfg.controller
     const detected = await getClashVergeDetection()
     return detected?.ok ? detected.controller : ''
+  }
+
+  function median(values) {
+    const sorted = values.filter((value) => typeof value === 'number' && Number.isFinite(value)).sort((a, b) => a - b)
+    if (!sorted.length) return null
+    const middle = Math.floor(sorted.length / 2)
+    const value = sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2
+    return Math.round(value * 10) / 10
+  }
+
+  function attachStability(result) {
+    if (!result?.scores) return result
+    const previous = store.readHistory(12).filter(
+      (item) =>
+        item.mode === 'full' &&
+        (item.fullStatus ?? 'complete') === 'complete' &&
+        item.scoreVersion === SCORE_VERSION &&
+        typeof item.aiScore === 'number' &&
+        typeof item.scores?.overall === 'number',
+    )
+    const currentAi = result.scores.ai
+    const currentOverall = result.scores.overall
+    const aiMedian = median([currentAi, ...previous.slice(0, 2).map((item) => item.aiScore)])
+    const overallMedian = median([currentOverall, ...previous.slice(0, 2).map((item) => item.scores.overall)])
+    const previousStable = previous[0]?.stableAi ?? previous[0]?.aiScore ?? null
+    const previousPrevious = previous[1]?.stableAi ?? previous[1]?.aiScore ?? null
+    let stableAi = aiMedian
+    let confirmed = previousStable == null || previousPrevious == null
+    if (aiMedian != null && previousStable != null && previousPrevious != null) {
+      const delta = aiMedian - previousStable
+      const priorDelta = previousStable - previousPrevious
+      // A level change must be confirmed by two consecutive runs in the same
+      // direction; otherwise keep the previous stable level.
+      confirmed = Math.abs(delta) < 2 || (Math.sign(delta) !== 0 && Math.sign(delta) === Math.sign(priorDelta))
+      if (!confirmed) stableAi = previousStable
+    }
+    result.scores.aiStable = stableAi
+    result.scores.overallStable = overallMedian
+
+    const previousAi = previous[0]?.aiScore ?? null
+    const previousCoverage = previous[0]?.scoreMeta?.coverage ?? null
+    const aiDelta = currentAi != null && previousAi != null ? Math.round((currentAi - previousAi) * 10) / 10 : null
+    const coverageDelta =
+      currentAi != null && previousCoverage != null
+        ? Math.round(((result.scores.meta?.coverage ?? 0) - previousCoverage) * 100) / 100
+        : null
+    let reason = '正常波动'
+    if (coverageDelta != null && coverageDelta <= -0.2) reason = '来源缺失或覆盖下降'
+    else if (aiDelta != null && Math.abs(aiDelta) >= 10) reason = '来源结论变化'
+    result.scores.stability = {
+      window: 3,
+      samples: Math.min(3, previous.length + 1),
+      previousAi,
+      previousOverall: previous[0]?.scores?.overall ?? null,
+      aiDelta,
+      coverageDelta,
+      aiMedian,
+      overallMedian,
+      confirmed,
+      held: stableAi !== aiMedian,
+      reason,
+    }
+    return result
   }
 
   function readNodeSources() {
@@ -345,7 +422,14 @@ export function apply(ctx, config) {
         proxyPortListening: base.windows?.mixedPort?.listening === true,
       },
     })
-    const previous = store.readHistory(1)[0] ?? null
+    const previous =
+      store.readHistory(12).find(
+        (item) =>
+          item.mode === 'full' &&
+          (item.fullStatus ?? 'complete') === 'complete' &&
+          item.scoreVersion === SCORE_VERSION &&
+          typeof item.scores?.overall === 'number',
+      ) ?? null
     const complete = {
       ...base,
       ipApi,
@@ -362,7 +446,6 @@ export function apply(ctx, config) {
       alerts: [],
     }
     complete.alerts = buildAlerts(complete, previous, cfg)
-    store.appendHistory(compactRecord(complete))
     return complete
   }
 
@@ -371,16 +454,44 @@ export function apply(ctx, config) {
     const job = (async () => {
       const result = mode === 'full' ? await probeFull() : await probeLight()
       if (mode === 'light') {
-        // 轻检只刷新运行态；AI 评分属于全量结果，保留上一次全量值，
-        // 避免每 5 分钟的轻检把页面上的评分清空（表现为“像没显示完”）。
-        result.ai = snapshot?.ai ?? null
-        result.scores = snapshot?.scores ?? null
-        result.aiFromTs = lastFullAt
+        // Light checks only refresh live state. AI/reputation scores stay bound
+        // to the last complete full run, never to a partial light snapshot.
+        result.ai = lastFull?.ai ?? null
+        result.scores = lastFull?.scores ?? null
+        result.aiFromTs = lastFull?.ts ?? null
+        result.fullStatus = lastFull ? 'cached' : 'missing'
+      } else {
+        result.aiFromTs = result.ts
+        const complete = result.scores?.meta?.complete === true && result.scores?.ai != null
+        if (complete) {
+          attachStability(result)
+          result.fullStatus = 'complete'
+          lastFull = result
+          lastFullAt = result.ts
+          try {
+            store.saveLastFull(result)
+          } catch (error) {
+            console.log(`[vpn-guard] save last full failed: ${error?.message ?? error}`)
+          }
+          store.appendHistory(compactRecord(result))
+        } else {
+          const partialMeta = result.scores?.meta ?? null
+          const previous = lastFull
+          result.partialMeta = partialMeta
+          result.ai = previous?.ai ?? result.ai
+          result.scores = previous?.scores ?? result.scores
+          result.aiFromTs = previous?.ts ?? null
+          result.fullStatus = previous ? 'stale' : 'partial'
+          const partialRecord = compactRecord({ ...result, mode: 'full-partial', scores: null, ai: null })
+          partialRecord.partialMeta = partialMeta
+          partialRecord.complete = false
+          partialRecord.scoreMeta = partialMeta
+          store.appendHistory(partialRecord)
+        }
       }
       snapshot = result
       nodeCache = { at: 0, rows: [] }
-      if (mode === 'full') lastFullAt = result.ts
-      else lastLightAt = result.ts
+      if (mode === 'light') lastLightAt = result.ts
       return result
     })()
     running = job
@@ -430,7 +541,15 @@ export function apply(ctx, config) {
       handler: async () => ({
         ok: true,
         version: VERSION,
+        scoreVersion: SCORE_VERSION,
         snapshot,
+        lastFull: lastFull
+          ? {
+              ts: lastFull.ts,
+              fullStatus: lastFull.fullStatus ?? 'complete',
+              scores: lastFull.scores ?? null,
+            }
+          : null,
         config: publicConfig(cfg),
         detection: detectCache.value,
         lastLightAt,

@@ -30,6 +30,16 @@ This means WireGuard, OpenVPN, Tailscale, sing-box, v2rayN, Clash Verge, Mihomo,
 - A working VPN/proxy route **or** a Clash/Mihomo-compatible controller.
 - Optional: `ipjudge` and `ipcheck` binaries. Without them, the page still works using generic egress checks; AI per-service rows fall back to `— / 证据不足`.
 
+## Scoring model (v2, 0.5.0)
+
+- Light checks only refresh live state; they never clear or overwrite AI scores.
+- Only a complete full run replaces the last-known-good AI snapshot; incomplete runs keep the previous complete result and are labeled as incomplete.
+- Missing evidence is `null` (shown as `— / 证据不足`), never converted into a low score.
+- Stable AI KPI uses a rolling median of the last 3 complete runs; history keeps the raw value, score version and coverage/confidence.
+- The last complete full snapshot is persisted in `~/.dsh/vpn-guard/last-full.json`, so a restart does not blank the page.
+
+See [docs/SCORING.md](docs/SCORING.md) for the exact rules.
+
 ## Install
 
 ```text

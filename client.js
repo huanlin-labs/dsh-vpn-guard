@@ -137,6 +137,34 @@ window.__ModuleLoader__.load({
       return date.toLocaleString('zh-CN', { hour12: false })
     }
 
+    function ageText(value) {
+      if (!value) return ''
+      const minutes = Math.max(0, Math.round((Date.now() - new Date(value).getTime()) / 60000))
+      if (!Number.isFinite(minutes)) return ''
+      if (minutes < 1) return '刚刚'
+      if (minutes < 60) return `${minutes} 分钟前`
+      const hours = Math.round(minutes / 60)
+      if (hours < 24) return `${hours} 小时前`
+      return `${Math.round(hours / 24)} 天前`
+    }
+
+    function scoreMeta(scores) {
+      return scores && scores.meta && typeof scores.meta === 'object' ? scores.meta : null
+    }
+
+    function confidenceLabel(meta) {
+      if (!meta) return '未知'
+      if (meta.confidence === 'high') return '高'
+      if (meta.confidence === 'medium') return '中'
+      if (meta.confidence === 'low') return '低'
+      return '未知'
+    }
+
+    function coverageText(meta) {
+      if (!meta || typeof meta.coverage !== 'number') return '—'
+      return `${Math.round(meta.coverage * 100)}%`
+    }
+
     function toneOf(level) {
       const text = String(level || '').toLowerCase()
       if (['good', 'ok', 'clear', 'success', 'true'].includes(text)) return C.success
@@ -228,12 +256,14 @@ window.__ModuleLoader__.load({
 
     function ScoreCell(props) {
       const value = typeof props.value === 'number' ? props.value : null
-      const tone = scoreTone(value)
+      const muted = props.muted === true || props.confidence === '低' || props.confidence === '未知'
+      const tone = value == null ? C.secondary : muted ? C.secondary : scoreTone(value)
       return h(
         'div',
         { className: 'vpg-score-cell', style: { color: tone } },
         h('span', { className: 'vpg-score-num' }, value == null ? '—' : value),
         h('span', { className: 'vpg-score-bar' }, h('i', { style: { width: `${value == null ? 0 : value}%` } })),
+        muted && value != null ? h('span', { style: { fontSize: '9px', opacity: 0.75 } }, '低置信') : null,
       )
     }
 
@@ -245,7 +275,7 @@ window.__ModuleLoader__.load({
         h('div', { className: 'vpg-kpi-label' }, props.label),
         h(
           'div',
-          { className: 'vpg-kpi-value', style: { color: scoreTone(value) } },
+          { className: 'vpg-kpi-value', style: { color: value == null ? C.secondary : scoreTone(value) } },
           value == null ? '—' : value,
           h('small', null, '/100'),
         ),
@@ -303,7 +333,8 @@ window.__ModuleLoader__.load({
         const item = opts.item
         let score = levelScore(item && item.level)
         if (score == null && opts.inferredFrom != null) score = opts.inferredFrom
-        if (score == null && claude && claude.ok) score = 68.4
+        // No service-level result means "no evidence", not a neutral 68.4.
+        // Missing data must stay missing so it cannot become a fake low score.
         const platformBias =
           {
             Claude: 0,
@@ -325,20 +356,23 @@ window.__ModuleLoader__.load({
           if (ipjudge && typeof ipjudge.score === 'number' && ipjudge.score < 70) score -= 14.6
           score = clampScore(score)
         }
-        const confidence =
-          item && claude && exit ? '高' : item && (claude || exit) ? '中' : item || claude || exit ? '低' : '未知'
+        const confidence = item && claude && claude.ok && exit && exit.ok ? '中' : item ? '低' : '未知'
         const verdict =
           region === '不支持' || region === '未开放'
             ? '不建议'
             : score == null
               ? '证据不足'
-              : score >= 85
-                ? '可用'
-                : score >= 60
-                  ? '可用但需注意'
-                  : score > 0
-                    ? '风险较高'
-                    : '不建议'
+              : confidence === '未知'
+                ? '未判定'
+                : confidence === '低'
+                  ? '低置信'
+                  : score >= 85
+                    ? '可用'
+                    : score >= 60
+                      ? '可用但需注意'
+                      : score > 0
+                        ? '风险较高'
+                        : '不建议'
         return {
           key: name,
           name,
@@ -369,12 +403,7 @@ window.__ModuleLoader__.load({
       const chatgptItem = byName('ChatGPT')
       const geminiItem = byName('Gemini')
       const geminiApiItem = byName('Gemini API')
-      const chatgptScore =
-        levelScore(chatgptItem && chatgptItem.level) == null
-          ? claude && claude.ok
-            ? 68.4
-            : null
-          : levelScore(chatgptItem.level)
+      const chatgptScore = levelScore(chatgptItem && chatgptItem.level)
       const rows = [
         make('Claude', { item: claudeItem, region: regionOf('Claude', claudeItem) }),
         make('ChatGPT', { item: chatgptItem, region: regionOf('ChatGPT', chatgptItem) }),
@@ -695,6 +724,10 @@ window.__ModuleLoader__.load({
       const exit = snapshot && snapshot.exit ? snapshot.exit : null
       const ai = snapshot && snapshot.ai ? snapshot.ai : null
       const scores = snapshot && snapshot.scores ? snapshot.scores : null
+      const metaInfo = scoreMeta(scores)
+      const aiAt = (snapshot && snapshot.aiFromTs) || (meta && meta.lastFullAt) || null
+      const aiAge = ageText(aiAt)
+      const fullStatus = (snapshot && snapshot.fullStatus) || 'missing'
       const info = (clash && clash.info) || { trafficGb: null, expiry: null, resetDays: null }
       const alerts = (snapshot && snapshot.alerts) || []
       const cfg = (meta && meta.config) || {}
@@ -705,33 +738,43 @@ window.__ModuleLoader__.load({
 
       const overallTone = alerts.some((item) => item.level === 'bad')
         ? C.error
-        : alerts.length > 0
-          ? C.warn
-          : snapshot
-            ? C.success
-            : C.secondary
+        : !metaInfo || metaInfo.complete !== true
+          ? C.secondary
+          : alerts.length > 0
+            ? C.warn
+            : C.success
       const overallText = !snapshot
         ? '等待首次检测'
-        : alerts.some((item) => item.level === 'bad')
-          ? '异常'
-          : alerts.length > 0
-            ? '注意'
-            : '正常'
+        : !metaInfo || metaInfo.complete !== true
+          ? '证据不足'
+          : alerts.some((item) => item.level === 'bad')
+            ? '异常'
+            : alerts.length > 0
+              ? '注意'
+              : '正常'
 
       const verdictTitle =
         !snapshot
           ? '正在读取出口状态'
           : alerts.some((item) => item.level === 'bad')
             ? '当前出口有需要处理的风险'
-            : typeof (scores && scores.overall) === 'number' && scores.overall >= 85
-              ? '当前出口状态良好'
-              : '当前出口可用，但建议检查低分项'
+            : !metaInfo || metaInfo.complete !== true
+              ? '证据不足，等待完整全量'
+              : typeof scores.overall === 'number' && scores.overall >= 85 && metaInfo.confidence !== 'low'
+                ? '当前出口状态良好'
+                : '当前出口可用，但建议检查低分项'
       const verdictSub =
         !snapshot
-          ? '首次加载会自动做一次轻量检测；AI 评分需要全量检测。'
+          ? '首次加载会自动做一次轻量检测；AI 评分需要完整全量。'
           : `当前节点 ${cleanNodeName(snapshot.current) || '—'} · 出口 ${exit && exit.ok ? exit.ip : '获取失败'} · ${
               exit && exit.ok ? [exit.city, exit.country].filter(Boolean).join(' / ') : '—'
-            } · AI 评分${ai ? '基于全量检测' : '尚未全量'}${meta && meta.lastFullAt ? ` ${fmtTime(meta.lastFullAt)}` : ''}`
+            } · AI ${ai ? `基于完整全量 ${fmtTime(aiAt)}${aiAge ? `（${aiAge}）` : ''} · 覆盖 ${coverageText(metaInfo)} · 置信 ${confidenceLabel(metaInfo)}` : '尚未完整全量'}${
+              fullStatus === 'stale'
+                ? ' · 本次全量不完整，保留上次完整结果'
+                : fullStatus === 'partial'
+                  ? ' · 本次全量不完整，暂无完整结果'
+                  : ''
+            }`
 
       const filteredNodes = nodes.filter((node) => {
         const text = `${node.name} ${node.base} ${node.csv?.isp || ''} ${node.csv?.exitIp || ''}`.toLowerCase()
@@ -832,7 +875,9 @@ window.__ModuleLoader__.load({
                 }),
                 h(Row, {
                   k: 'AI 评分时间',
-                  v: meta && meta.lastFullAt ? `全量 ${fmtTime(meta.lastFullAt)}` : '尚未全量',
+                  v: aiAt
+                    ? `完整全量 ${fmtTime(aiAt)}${aiAge ? `（${aiAge}）` : ''} · 覆盖 ${coverageText(metaInfo)} · 置信 ${confidenceLabel(metaInfo)}`
+                    : '尚未完整全量',
                 }),
               ),
             ),
@@ -844,7 +889,11 @@ window.__ModuleLoader__.load({
               'div',
               { className: 'vpg-card-note', style: { marginBottom: 0, fontSize: '12px' } },
               snapshot
-                ? `${verdictTitle}。AI 服务 ${serviceCount} 项有结果；社媒 ${socialCount} 个平台仅做 IP 侧适配度。节点共 ${nodes.length} 个，默认展示前 20 个。`
+                ? `${verdictTitle}。AI ${
+                    metaInfo?.complete
+                      ? `3 次中位 ${scores.aiStable ?? '—'} / 本次 ${scores.ai ?? '—'}，覆盖 ${coverageText(metaInfo)}，置信 ${confidenceLabel(metaInfo)}`
+                      : '证据不足（尚未取得完整全量）'
+                  }；社媒 ${socialCount} 个平台仅做 IP 侧适配度。节点共 ${nodes.length} 个，默认展示前 20 个。`
                 : '等待首次轻量检测。',
             ),
           ),
@@ -1050,6 +1099,8 @@ window.__ModuleLoader__.load({
       }
 
       function renderAI() {
+        const aiMeta = scoreMeta(scores)
+        const stability = (scores && scores.stability) || null
         return h(
           Card,
           {
@@ -1062,11 +1113,36 @@ window.__ModuleLoader__.load({
                 )
               : null,
           },
-          !ai
-            ? h('div', { className: 'vpg-empty' }, '尚未全量检测。点右上角「全量检测」获取 ipjudge / claude-ipcheck 结果。')
+          !ai || !aiMeta || aiMeta.complete !== true
+            ? h(
+                'div',
+                { className: 'vpg-empty' },
+                '尚未取得完整全量结果。当前显示“证据不足”，不会用缺失数据凑低分；请点右上角「全量检测」。',
+              )
             : h(
                 React.Fragment,
                 null,
+                h(
+                  'div',
+                  { className: 'vpg-card-note' },
+                  `完整全量 ${fmtTime(aiAt)}${aiAge ? `（${aiAge}）` : ''} · 覆盖 ${coverageText(aiMeta)} · 置信 ${confidenceLabel(aiMeta)} · 评分规则 ${aiMeta.version || '—'}`,
+                ),
+                fullStatus === 'stale'
+                  ? h(
+                      'div',
+                      { className: 'vpg-card-note', style: { color: C.warn } },
+                      '本次全量不完整，已保留上一次完整结果；不完整的来源不会被当作 0 分。',
+                    )
+                  : null,
+                stability
+                  ? h(
+                      'div',
+                      { className: 'vpg-card-note' },
+                      `稳定性：最近 ${stability.samples || 1} 次完整全量的 AI 中位 ${stability.aiMedian ?? '—'}，本次 ${scores.ai ?? '—'}（${
+                        stability.aiDelta == null ? '无前值' : stability.aiDelta > 0 ? `+${stability.aiDelta}` : stability.aiDelta
+                      }）· ${stability.held ? '档位变动待连续 2 次确认，暂按前值' : stability.confirmed ? '已连续 2 次确认' : '样本不足'} · 原因：${stability.reason || '正常波动'}`,
+                    )
+                  : null,
                 h(
                   'div',
                   { className: 'vpg-card-note' },
@@ -1098,8 +1174,16 @@ window.__ModuleLoader__.load({
                             h('td', null, h(Pill, { tone: item.region === '支持' || item.region === '已开放' ? C.success : item.region === '未知' ? C.secondary : C.error }, item.region)),
                             h('td', { className: 'wrap' }, shortText(item.ipType, 42)),
                             h('td', { className: 'vpg-mono' }, item.repRisk == null ? '—' : `${item.repRisk}/100`),
-                            h('td', null, h(ScoreCell, { value: item.score })),
-                            h('td', null, h(Pill, { tone: scoreTone(item.score) }, item.verdict)),
+                            h('td', null, h(ScoreCell, { value: item.score, confidence: item.confidence })),
+                            h(
+                              'td',
+                              null,
+                              h(
+                                Pill,
+                                { tone: item.confidence === '低' || item.confidence === '未知' ? C.secondary : scoreTone(item.score) },
+                                item.verdict,
+                              ),
+                            ),
                             h('td', null, item.confidence),
                           ),
                           open
@@ -1290,7 +1374,7 @@ window.__ModuleLoader__.load({
                   h(
                     'thead',
                     null,
-                    h('tr', null, ['时间', '模式', '节点', '出口 IP', '总分 / AI', '告警'].map((title) => h('th', { key: title }, title))),
+                    h('tr', null, ['时间', '模式', '规则', '节点', '出口 IP', '总分 / AI', '覆盖/置信', '告警'].map((title) => h('th', { key: title }, title))),
                   ),
                   h(
                     'tbody',
@@ -1300,13 +1384,25 @@ window.__ModuleLoader__.load({
                         'tr',
                         { key: `${item.ts}-${index}` },
                         h('td', { className: 'vpg-mono' }, fmtTime(item.ts)),
-                        h('td', null, item.mode === 'full' ? '全量' : '轻量'),
+                        h('td', null, item.mode === 'full' ? '全量' : item.mode === 'full-partial' ? '全量(不完整)' : '轻量'),
+                        h('td', { className: 'vpg-mono' }, item.scoreVersion || '—'),
                         h('td', { className: 'wrap' }, item.node || '—'),
                         h('td', { className: 'vpg-mono' }, item.exitIp || '—'),
                         h(
                           'td',
                           { className: 'vpg-mono' },
-                          `${item.scores && item.scores.overall != null ? item.scores.overall : '—'} / ${item.aiScore != null ? item.aiScore : '—'}`,
+                          `${item.stableOverall ?? (item.scores && item.scores.overall != null ? item.scores.overall : '—')} / ${
+                            item.stableAi ?? (item.aiScore != null ? item.aiScore : '—')
+                          }`,
+                        ),
+                        h(
+                          'td',
+                          { className: 'vpg-mono' },
+                          item.scoreMeta
+                            ? `${Math.round((item.scoreMeta.coverage ?? 0) * 100)}% / ${item.scoreMeta.confidence || '—'}`
+                            : item.complete === false
+                              ? '不完整'
+                              : '—',
                         ),
                         h('td', { className: 'wrap' }, (item.alerts || []).join('；') || '—'),
                       ),
@@ -1405,7 +1501,7 @@ window.__ModuleLoader__.load({
               { className: 'vpg-sub' },
               `VPN / 代理${clash && clash.version ? ' · Clash ' + clash.version : ''} · 出口与 AI 风控监视`,
               meta && meta.lastLightAt ? ` · 轻量 ${fmtTime(meta.lastLightAt)}` : '',
-              meta && meta.lastFullAt ? ` · 全量 ${fmtTime(meta.lastFullAt)}` : '',
+              ` · AI ${aiAt ? ageText(aiAt) || fmtTime(aiAt) : '待完整全量'}`,
             ),
           ),
           h(
@@ -1437,7 +1533,14 @@ window.__ModuleLoader__.load({
               h(Pill, { tone: overallTone }, overallText),
               exit && exit.ok ? h(Pill, { tone: C.success }, exit.ip) : null,
               exit && exit.ok ? h(Pill, { tone: C.secondary }, [exit.city, exit.country].filter(Boolean).join(' / ')) : null,
-              ai ? h(Pill, { tone: scoreTone(ai.ipjudge && ai.ipjudge.score) }, `AI ${ai.ipjudge && ai.ipjudge.score != null ? ai.ipjudge.score : '—'}`) : null,
+              ai && metaInfo?.complete
+                ? h(
+                    Pill,
+                    { tone: scoreTone(scores.aiStable ?? scores.ai) },
+                    `AI ${scores.aiStable ?? scores.ai ?? '—'}${metaInfo.confidence === 'low' ? ' · 低置信' : ''}`,
+                  )
+                : h(Pill, { tone: C.secondary }, 'AI 待完整全量'),
+              aiAt ? h(Pill, { tone: aiAge && /小时|天/.test(aiAge) ? C.warn : C.secondary }, `AI 数据 ${aiAge || fmtTime(aiAt)}`) : null,
               info.trafficGb != null ? h(Pill, { tone: C.secondary }, `流量 ${info.trafficGb} GB`) : null,
             ),
           ),
@@ -1445,9 +1548,21 @@ window.__ModuleLoader__.load({
             'div',
             { className: 'vpg-kpis' },
             h(Kpi, { label: '出口身份', value: scores ? scores.identity : null, note: 'IP 类型 / ASN' }),
-            h(Kpi, { label: '信誉风险', value: scores ? scores.reputation : null, note: 'proxycheck / 滥用' }),
-            h(Kpi, { label: 'AI 可用性', value: scores ? scores.ai : null, note: 'ipjudge + 服务等级' }),
-            h(Kpi, { label: '网络质量', value: scores ? scores.network : null, note: '控制器 / 端口 / 延迟' }),
+            h(Kpi, { label: '信誉风险', value: scores ? scores.reputation : null, note: scores && scores.reputation == null ? '证据不足' : 'proxycheck / 滥用' }),
+            h(Kpi, {
+              label: 'AI 可用性',
+              value: scores ? scores.aiStable ?? scores.ai : null,
+              note: metaInfo
+                ? scores.ai == null
+                  ? '证据不足 · 本次无 AI 数据'
+                  : `3 次中位 · 本次 ${scores.ai ?? '—'} · 置信 ${confidenceLabel(metaInfo)}`
+                : '待完整全量',
+            }),
+            h(Kpi, {
+              label: '网络质量',
+              value: scores ? scores.network : null,
+              note: scores && scores.network == null ? '证据不足' : '控制器 / 端口 / 延迟',
+            }),
           ),
         ),
 
